@@ -33,9 +33,8 @@ def _coerce_legacy_flat_address(data: object) -> object:
     """Map v1 flat address columns into a Home address when clients omit `addresses`."""
     if not isinstance(data, dict):
         return data
-    addresses = data.get("addresses")
     has_legacy = any(data.get(key) for key in _LEGACY_ADDRESS_KEYS)
-    if not has_legacy or addresses:
+    if not has_legacy or "addresses" in data:
         return data
     return {
         **data,

@@ -233,6 +233,23 @@ def test_legacy_flat_address_is_coerced(client, payload):
     assert body["addresses"][0]["city"] == "Boston"
 
 
+def test_explicit_empty_addresses_not_overridden_by_legacy(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "addresses": [],
+            "address": "1 Old St",
+            "city": "Boston",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
 def test_patch_null_addresses_clears(client, payload):
     contact_id = client.post(BASE, json=payload).json()["id"]
     response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
