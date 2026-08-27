@@ -1,11 +1,55 @@
+import base64
+import binascii
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator, model_validator
 
 # ~500 KB raw image → ~700 KB as a data URL after base64 expansion.
 _MAX_PHOTO_CHARS = 700_000
 _PHOTO_PREFIX = "data:image/"
+_ALLOWED_PHOTO_MIME = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+_LEGACY_ADDRESS_KEYS = ("address", "city", "state", "postal_code", "country")
+
+
+def _validate_photo_data_url(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
+        raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
+    header, _, payload = value.partition(";base64,")
+    mime = header.removeprefix("data:")
+    if mime not in _ALLOWED_PHOTO_MIME:
+        allowed = ", ".join(sorted(_ALLOWED_PHOTO_MIME))
+        raise ValueError(f"Photo must be one of: {allowed}")
+    try:
+        base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Photo base64 payload is invalid") from exc
+    return value
+
+
+def _coerce_legacy_flat_address(data: object) -> object:
+    """Map v1 flat address columns into a Home address when clients omit `addresses`."""
+    if not isinstance(data, dict):
+        return data
+    addresses = data.get("addresses")
+    has_legacy = any(data.get(key) for key in _LEGACY_ADDRESS_KEYS)
+    if not has_legacy or addresses:
+        return data
+    return {
+        **data,
+        "addresses": [
+            {
+                "type": "Home",
+                "address": data.get("address"),
+                "city": data.get("city"),
+                "state": data.get("state"),
+                "postal_code": data.get("postal_code"),
+                "country": data.get("country"),
+            }
+        ],
+    }
 
 
 class AddressType(str, Enum):
@@ -114,11 +158,7 @@ class ContactBase(BaseModel):
     @field_validator("photo")
     @classmethod
     def _photo_is_image_data_url(cls, value: str | None) -> str | None:
-        if value is None or value == "":
-            return None
-        if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
-            raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
-        return value
+        return _validate_photo_data_url(value)
 
 
 _FULL_EXAMPLE = {
@@ -155,6 +195,11 @@ class ContactCreate(ContactBase):
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE, _MINIMAL_EXAMPLE]})
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_flat_address(cls, data: object) -> object:
+        return _coerce_legacy_flat_address(data)
+
 
 class ContactReplace(ContactBase):
     """
@@ -166,6 +211,11 @@ class ContactReplace(ContactBase):
     """
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE]})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_flat_address(cls, data: object) -> object:
+        return _coerce_legacy_flat_address(data)
 
 
 class ContactUpdate(BaseModel):
@@ -205,11 +255,7 @@ class ContactUpdate(BaseModel):
     @field_validator("photo")
     @classmethod
     def _photo_is_image_data_url(cls, value: str | None) -> str | None:
-        if value is None or value == "":
-            return None
-        if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
-            raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
-        return value
+        return _validate_photo_data_url(value)
 
 
 class ContactRead(ContactBase):

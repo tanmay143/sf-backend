@@ -1,7 +1,7 @@
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Address, Contact
+from app.models import Address, Contact, _utcnow
 from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
@@ -20,6 +20,7 @@ def _build_addresses(payload: list[AddressCreate]) -> list[Address]:
 def _replace_addresses(contact: Contact, payload: list[AddressCreate]) -> None:
     contact.addresses.clear()
     contact.addresses.extend(_build_addresses(payload))
+    contact.updated_at = _utcnow()
 
 
 def get_contact(db: Session, contact_id: int) -> Contact | None:
@@ -100,11 +101,17 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
     data = payload.model_dump(exclude_unset=True)
-    addresses = data.pop("addresses", None)
+    data.pop("addresses", None)
     for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
-    if addresses is not None:
-        _replace_addresses(contact, [AddressCreate.model_validate(item) for item in addresses])
+    if "addresses" in payload.model_fields_set:
+        if payload.addresses is None:
+            _replace_addresses(contact, [])
+        else:
+            _replace_addresses(
+                contact,
+                [AddressCreate.model_validate(item) for item in payload.addresses],
+            )
     db.commit()
     db.refresh(contact)
     return get_contact(db, contact.id) or contact
