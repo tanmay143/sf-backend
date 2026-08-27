@@ -1,10 +1,97 @@
+import base64
+import binascii
 from datetime import datetime, timezone
+from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator, model_validator
 
 # ~500 KB raw image → ~700 KB as a data URL after base64 expansion.
 _MAX_PHOTO_CHARS = 700_000
 _PHOTO_PREFIX = "data:image/"
+_ALLOWED_PHOTO_MIME = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+_LEGACY_ADDRESS_KEYS = ("address", "city", "state", "postal_code", "country")
+
+
+def _validate_photo_data_url(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
+        raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
+    header, _, payload = value.partition(";base64,")
+    mime = header.removeprefix("data:")
+    if mime not in _ALLOWED_PHOTO_MIME:
+        allowed = ", ".join(sorted(_ALLOWED_PHOTO_MIME))
+        raise ValueError(f"Photo must be one of: {allowed}")
+    try:
+        base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Photo base64 payload is invalid") from exc
+    return value
+
+
+def _coerce_legacy_flat_address(data: object) -> object:
+    """Map v1 flat address columns into a Home address when clients omit `addresses`."""
+    if not isinstance(data, dict):
+        return data
+    has_legacy = any(data.get(key) for key in _LEGACY_ADDRESS_KEYS)
+    if not has_legacy or "addresses" in data:
+        return data
+    return {
+        **data,
+        "addresses": [
+            {
+                "type": "Home",
+                "address": data.get("address"),
+                "city": data.get("city"),
+                "state": data.get("state"),
+                "postal_code": data.get("postal_code"),
+                "country": data.get("country"),
+            }
+        ],
+    }
+
+
+class AddressType(str, Enum):
+    HOME = "Home"
+    WORK = "Work"
+    OTHER = "Other"
+
+
+class AddressBase(BaseModel):
+    type: AddressType = Field(description="Address category: Home, Work, or Other.", examples=["Home"])
+    address: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Street address, including unit or suite.",
+        examples=["1 Market St, Suite 400"],
+    )
+    city: str | None = Field(default=None, max_length=120, description="City or locality.", examples=["San Francisco"])
+    state: str | None = Field(
+        default=None,
+        max_length=120,
+        description="State, province, or region.",
+        examples=["CA"],
+    )
+    postal_code: str | None = Field(
+        default=None,
+        max_length=20,
+        description="Postal or ZIP code.",
+        examples=["94105"],
+    )
+    country: str | None = Field(default=None, max_length=120, description="Country name.", examples=["USA"])
+
+
+class AddressCreate(AddressBase):
+    """Address payload embedded in contact create/replace requests."""
+
+
+class AddressRead(AddressBase):
+    """A stored address linked to a contact."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="Server-assigned identifier.", examples=[1])
+    contact_id: int = Field(description="Parent contact id.", examples=[1])
 
 
 class ContactBase(BaseModel):
@@ -48,26 +135,6 @@ class ContactBase(BaseModel):
         description="Role held at the company.",
         examples=["Mathematician"],
     )
-    address: str | None = Field(
-        default=None,
-        max_length=300,
-        description="Street address, including unit or suite.",
-        examples=["1 Market St, Suite 400"],
-    )
-    city: str | None = Field(default=None, max_length=120, description="City or locality.", examples=["San Francisco"])
-    state: str | None = Field(
-        default=None,
-        max_length=120,
-        description="State, province, or region.",
-        examples=["CA"],
-    )
-    postal_code: str | None = Field(
-        default=None,
-        max_length=20,
-        description="Postal or ZIP code.",
-        examples=["94105"],
-    )
-    country: str | None = Field(default=None, max_length=120, description="Country name.", examples=["USA"])
     notes: str | None = Field(
         default=None,
         description="Free-form notes about the contact. No length limit.",
@@ -82,15 +149,15 @@ class ContactBase(BaseModel):
         ),
         examples=["data:image/png;base64,iVBORw0KGgo="],
     )
+    addresses: list[AddressCreate] = Field(
+        default_factory=list,
+        description="Postal addresses for this contact. Each has a type: Home, Work, or Other.",
+    )
 
     @field_validator("photo")
     @classmethod
     def _photo_is_image_data_url(cls, value: str | None) -> str | None:
-        if value is None or value == "":
-            return None
-        if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
-            raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
-        return value
+        return _validate_photo_data_url(value)
 
 
 _FULL_EXAMPLE = {
@@ -100,13 +167,24 @@ _FULL_EXAMPLE = {
     "phone": "+1-415-555-0101",
     "company": "Analytical Engines",
     "job_title": "Mathematician",
-    "address": "1 Market St, Suite 400",
-    "city": "San Francisco",
-    "state": "CA",
-    "postal_code": "94105",
-    "country": "USA",
     "notes": "Met at the SF hackathon.",
     "photo": None,
+    "addresses": [
+        {
+            "type": "Home",
+            "address": "1 Market St, Suite 400",
+            "city": "San Francisco",
+            "state": "CA",
+            "postal_code": "94105",
+            "country": "USA",
+        },
+        {
+            "type": "Work",
+            "address": "100 Analytical Way",
+            "city": "London",
+            "country": "UK",
+        },
+    ],
 }
 _MINIMAL_EXAMPLE = {"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"}
 
@@ -116,16 +194,27 @@ class ContactCreate(ContactBase):
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE, _MINIMAL_EXAMPLE]})
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_flat_address(cls, data: object) -> object:
+        return _coerce_legacy_flat_address(data)
+
 
 class ContactReplace(ContactBase):
     """
     Body of `PUT /api/v1/contacts/{contact_id}`.
 
     This is a full replacement: any optional field you omit is set back to `null`.
+    The `addresses` list replaces all existing addresses.
     Use `PATCH` if you only want to change some fields.
     """
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE]})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_flat_address(cls, data: object) -> object:
+        return _coerce_legacy_flat_address(data)
 
 
 class ContactUpdate(BaseModel):
@@ -151,26 +240,21 @@ class ContactUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=40, description="New phone number.")
     company: str | None = Field(default=None, max_length=200, description="New company.")
     job_title: str | None = Field(default=None, max_length=200, description="New job title.")
-    address: str | None = Field(default=None, max_length=300, description="New street address.")
-    city: str | None = Field(default=None, max_length=120, description="New city.")
-    state: str | None = Field(default=None, max_length=120, description="New state or region.")
-    postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
-    country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
     photo: str | None = Field(
         default=None,
         max_length=_MAX_PHOTO_CHARS,
         description="New profile photo data URL, or null to clear.",
     )
+    addresses: list[AddressCreate] | None = Field(
+        default=None,
+        description="Replace all addresses when present in the request body.",
+    )
 
     @field_validator("photo")
     @classmethod
     def _photo_is_image_data_url(cls, value: str | None) -> str | None:
-        if value is None or value == "":
-            return None
-        if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
-            raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
-        return value
+        return _validate_photo_data_url(value)
 
 
 class ContactRead(ContactBase):
@@ -184,6 +268,10 @@ class ContactRead(ContactBase):
                     **_FULL_EXAMPLE,
                     "id": 1,
                     "full_name": "Ada Lovelace",
+                    "addresses": [
+                        {**addr, "id": index + 1, "contact_id": 1}
+                        for index, addr in enumerate(_FULL_EXAMPLE["addresses"])
+                    ],
                     "created_at": "2026-08-19T16:22:58.189507Z",
                     "updated_at": "2026-08-19T16:22:58.189511Z",
                 }
@@ -199,6 +287,10 @@ class ContactRead(ContactBase):
     updated_at: datetime = Field(
         description="UTC timestamp of the last modification.",
         examples=["2026-08-19T16:22:58.189511Z"],
+    )
+    addresses: list[AddressRead] = Field(
+        default_factory=list,
+        description="Postal addresses linked to this contact.",
     )
 
     @field_validator("created_at", "updated_at")

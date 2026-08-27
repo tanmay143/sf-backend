@@ -1,22 +1,39 @@
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models import Contact
-from app.schemas import ContactCreate, ContactReplace, ContactUpdate
+from app.models import Address, Contact, _utcnow
+from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
+
+_CONTACT_OPTIONS = [selectinload(Contact.addresses)]
 
 
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def _build_addresses(payload: list[AddressCreate]) -> list[Address]:
+    return [Address(**item.model_dump()) for item in payload]
+
+
+def _replace_addresses(contact: Contact, payload: list[AddressCreate]) -> None:
+    contact.addresses.clear()
+    contact.addresses.extend(_build_addresses(payload))
+    contact.updated_at = _utcnow()
+
+
 def get_contact(db: Session, contact_id: int) -> Contact | None:
-    return db.get(Contact, contact_id)
+    stmt = select(Contact).where(Contact.id == contact_id).options(*_CONTACT_OPTIONS)
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def get_contact_by_email(db: Session, email: str) -> Contact | None:
-    stmt = select(Contact).where(func.lower(Contact.email) == _normalize_email(email))
+    stmt = (
+        select(Contact)
+        .where(func.lower(Contact.email) == _normalize_email(email))
+        .options(*_CONTACT_OPTIONS)
+    )
     return db.execute(stmt).scalar_one_or_none()
 
 
@@ -34,7 +51,7 @@ def list_contacts(
     order: str = "asc",
 ) -> tuple[list[Contact], int]:
     """Return (page of contacts, total matching count)."""
-    stmt = select(Contact)
+    stmt = select(Contact).options(*_CONTACT_OPTIONS)
 
     if search:
         pattern = f"%{search.strip().lower()}%"
@@ -61,28 +78,43 @@ def list_contacts(
 
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
     data = payload.model_dump()
+    addresses = data.pop("addresses", [])
     data["email"] = _normalize_email(data["email"])
     contact = Contact(**data)
+    contact.addresses = _build_addresses([AddressCreate.model_validate(item) for item in addresses])
     db.add(contact)
     db.commit()
     db.refresh(contact)
-    return contact
+    return get_contact(db, contact.id) or contact
 
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
-    for field, value in payload.model_dump().items():
+    data = payload.model_dump()
+    addresses = data.pop("addresses", [])
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    _replace_addresses(contact, [AddressCreate.model_validate(item) for item in addresses])
     db.commit()
     db.refresh(contact)
-    return contact
+    return get_contact(db, contact.id) or contact
 
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    data.pop("addresses", None)
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    if "addresses" in payload.model_fields_set:
+        if payload.addresses is None:
+            _replace_addresses(contact, [])
+        else:
+            _replace_addresses(
+                contact,
+                [AddressCreate.model_validate(item) for item in payload.addresses],
+            )
     db.commit()
     db.refresh(contact)
-    return contact
+    return get_contact(db, contact.id) or contact
 
 
 def delete_contact(db: Session, contact: Contact) -> None:

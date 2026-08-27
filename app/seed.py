@@ -1,6 +1,6 @@
 from app.crud import count_contacts, create_contact
 from app.database import SessionLocal
-from app.schemas import ContactCreate
+from app.schemas import AddressCreate, ContactCreate
 
 SAMPLE_CONTACTS = [
     ContactCreate(
@@ -10,10 +10,21 @@ SAMPLE_CONTACTS = [
         phone="+1-415-555-0101",
         company="Analytical Engines",
         job_title="Mathematician",
-        city="San Francisco",
-        state="CA",
-        country="USA",
         notes="First programmer.",
+        addresses=[
+            AddressCreate(
+                type="Home",
+                city="San Francisco",
+                state="CA",
+                country="USA",
+            ),
+            AddressCreate(
+                type="Work",
+                address="100 Analytical Way",
+                city="London",
+                country="UK",
+            ),
+        ],
     ),
     ContactCreate(
         first_name="Grace",
@@ -22,9 +33,14 @@ SAMPLE_CONTACTS = [
         phone="+1-415-555-0102",
         company="US Navy",
         job_title="Rear Admiral",
-        city="Arlington",
-        state="VA",
-        country="USA",
+        addresses=[
+            AddressCreate(
+                type="Home",
+                city="Arlington",
+                state="VA",
+                country="USA",
+            ),
+        ],
     ),
     ContactCreate(
         first_name="Alan",
@@ -33,8 +49,13 @@ SAMPLE_CONTACTS = [
         phone="+44-20-5555-0103",
         company="Bletchley Park",
         job_title="Cryptanalyst",
-        city="London",
-        country="UK",
+        addresses=[
+            AddressCreate(
+                type="Work",
+                city="London",
+                country="UK",
+            ),
+        ],
     ),
 ]
 

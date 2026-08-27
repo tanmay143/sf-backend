@@ -124,7 +124,52 @@ def test_put_replaces_contact(client, payload):
     body = response.json()
     assert body["full_name"] == "Grace Hopper"
     assert body["company"] is None  # omitted fields are cleared by PUT
+    assert body["addresses"] == []  # omitted addresses are cleared by PUT
 
+
+def test_create_and_read_addresses(client, payload):
+    response = client.post(BASE, json=payload)
+    assert response.status_code == 201
+    body = response.json()
+    assert len(body["addresses"]) == 2
+    assert body["addresses"][0]["type"] == "Home"
+    assert body["addresses"][0]["city"] == "San Francisco"
+    assert body["addresses"][1]["type"] == "Work"
+
+    contact_id = body["id"]
+    fetched = client.get(f"{BASE}/{contact_id}").json()
+    assert len(fetched["addresses"]) == 2
+    assert all(addr["contact_id"] == contact_id for addr in fetched["addresses"])
+
+
+def test_put_replaces_addresses(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            **payload,
+            "addresses": [
+                {
+                    "type": "Other",
+                    "address": "42 Updated Lane",
+                    "city": "Berkeley",
+                    "state": "CA",
+                    "country": "USA",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["addresses"]) == 1
+    assert body["addresses"][0]["type"] == "Other"
+    assert body["addresses"][0]["city"] == "Berkeley"
+
+
+def test_delete_contact_cascades_addresses(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+    assert client.get(f"{BASE}/{contact_id}").status_code == 404
 
 def test_create_and_read_photo(client, payload):
     photo = "data:image/png;base64,iVBORw0KGgo="
@@ -137,7 +182,7 @@ def test_create_and_read_photo(client, payload):
 
 
 def test_put_preserves_photo_when_resent(client, payload):
-    photo = "data:image/jpeg;base64,/9j/4AAQ="
+    photo = "data:image/jpeg;base64,iVBORw0KGgo="
     contact_id = client.post(BASE, json={**payload, "photo": photo}).json()["id"]
     response = client.put(
         f"{BASE}/{contact_id}",
@@ -162,6 +207,75 @@ def test_put_omitting_photo_clears_it(client, payload):
 def test_rejects_non_image_photo(client, payload):
     response = client.post(BASE, json={**payload, "photo": "https://cdn.example/a.png"})
     assert response.status_code == 422
+
+
+def test_rejects_malformed_photo_base64(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,%%%"})
+    assert response.status_code == 422
+
+
+def test_legacy_flat_address_is_coerced(client, payload):
+    flat = {
+        "first_name": "Legacy",
+        "last_name": "Client",
+        "email": "legacy@example.com",
+        "address": "1 Old St",
+        "city": "Boston",
+        "state": "MA",
+        "postal_code": "02108",
+        "country": "USA",
+    }
+    response = client.post(BASE, json=flat)
+    assert response.status_code == 201
+    body = response.json()
+    assert len(body["addresses"]) == 1
+    assert body["addresses"][0]["type"] == "Home"
+    assert body["addresses"][0]["city"] == "Boston"
+
+
+def test_explicit_empty_addresses_not_overridden_by_legacy(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "addresses": [],
+            "address": "1 Old St",
+            "city": "Boston",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_patch_null_addresses_clears(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
+    assert response.status_code == 200
+    assert client.get(f"{BASE}/{contact_id}").json()["addresses"] == []
+
+
+def test_patch_addresses_updates_timestamp(client, payload):
+    created = client.post(BASE, json=payload).json()
+    contact_id = created["id"]
+    before = created["updated_at"]
+    response = client.patch(
+        f"{BASE}/{contact_id}",
+        json={
+            "addresses": [
+                {
+                    "type": "Work",
+                    "address": "99 New Ave",
+                    "city": "Oakland",
+                    "country": "USA",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["updated_at"] >= before
 
 
 def test_put_missing_contact_returns_404(client):
