@@ -124,7 +124,52 @@ def test_put_replaces_contact(client, payload):
     body = response.json()
     assert body["full_name"] == "Grace Hopper"
     assert body["company"] is None  # omitted fields are cleared by PUT
+    assert body["addresses"] == []  # omitted addresses are cleared by PUT
 
+
+def test_create_and_read_addresses(client, payload):
+    response = client.post(BASE, json=payload)
+    assert response.status_code == 201
+    body = response.json()
+    assert len(body["addresses"]) == 2
+    assert body["addresses"][0]["type"] == "Home"
+    assert body["addresses"][0]["city"] == "San Francisco"
+    assert body["addresses"][1]["type"] == "Work"
+
+    contact_id = body["id"]
+    fetched = client.get(f"{BASE}/{contact_id}").json()
+    assert len(fetched["addresses"]) == 2
+    assert all(addr["contact_id"] == contact_id for addr in fetched["addresses"])
+
+
+def test_put_replaces_addresses(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            **payload,
+            "addresses": [
+                {
+                    "type": "Other",
+                    "address": "42 Updated Lane",
+                    "city": "Berkeley",
+                    "state": "CA",
+                    "country": "USA",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["addresses"]) == 1
+    assert body["addresses"][0]["type"] == "Other"
+    assert body["addresses"][0]["city"] == "Berkeley"
+
+
+def test_delete_contact_cascades_addresses(client, payload):
+    contact_id = client.post(BASE, json=payload).json()["id"]
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+    assert client.get(f"{BASE}/{contact_id}").status_code == 404
 
 def test_create_and_read_photo(client, payload):
     photo = "data:image/png;base64,iVBORw0KGgo="
