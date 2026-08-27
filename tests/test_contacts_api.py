@@ -126,6 +126,44 @@ def test_put_replaces_contact(client, payload):
     assert body["company"] is None  # omitted fields are cleared by PUT
 
 
+def test_create_and_read_photo(client, payload):
+    photo = "data:image/png;base64,iVBORw0KGgo="
+    response = client.post(BASE, json={**payload, "photo": photo})
+    assert response.status_code == 201
+    assert response.json()["photo"] == photo
+
+    contact_id = response.json()["id"]
+    assert client.get(f"{BASE}/{contact_id}").json()["photo"] == photo
+
+
+def test_put_preserves_photo_when_resent(client, payload):
+    photo = "data:image/jpeg;base64,/9j/4AAQ="
+    contact_id = client.post(BASE, json={**payload, "photo": photo}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={**payload, "company": "Updated Co", "photo": photo},
+    )
+    assert response.status_code == 200
+    assert response.json()["photo"] == photo
+    assert response.json()["company"] == "Updated Co"
+
+
+def test_put_omitting_photo_clears_it(client, payload):
+    photo = "data:image/png;base64,iVBORw0KGgo="
+    contact_id = client.post(BASE, json={**payload, "photo": photo}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["photo"] is None
+
+
+def test_rejects_non_image_photo(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "https://cdn.example/a.png"})
+    assert response.status_code == 422
+
+
 def test_put_missing_contact_returns_404(client):
     response = client.put(
         f"{BASE}/9999",

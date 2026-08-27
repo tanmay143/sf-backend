@@ -2,6 +2,10 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
+# ~500 KB raw image → ~700 KB as a data URL after base64 expansion.
+_MAX_PHOTO_CHARS = 700_000
+_PHOTO_PREFIX = "data:image/"
+
 
 class ContactBase(BaseModel):
     """Fields shared by every contact request and response."""
@@ -69,6 +73,24 @@ class ContactBase(BaseModel):
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+    photo: str | None = Field(
+        default=None,
+        max_length=_MAX_PHOTO_CHARS,
+        description=(
+            "Optional profile photo as a data URL "
+            f"(must start with `{_PHOTO_PREFIX}`). Max ~{_MAX_PHOTO_CHARS // 1000} KB encoded."
+        ),
+        examples=["data:image/png;base64,iVBORw0KGgo="],
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _photo_is_image_data_url(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
+            raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
+        return value
 
 
 _FULL_EXAMPLE = {
@@ -84,6 +106,7 @@ _FULL_EXAMPLE = {
     "postal_code": "94105",
     "country": "USA",
     "notes": "Met at the SF hackathon.",
+    "photo": None,
 }
 _MINIMAL_EXAMPLE = {"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"}
 
@@ -134,6 +157,20 @@ class ContactUpdate(BaseModel):
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+    photo: str | None = Field(
+        default=None,
+        max_length=_MAX_PHOTO_CHARS,
+        description="New profile photo data URL, or null to clear.",
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _photo_is_image_data_url(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        if not value.startswith(_PHOTO_PREFIX) or ";base64," not in value:
+            raise ValueError("Photo must be a base64 image data URL (data:image/...;base64,...)")
+        return value
 
 
 class ContactRead(ContactBase):
